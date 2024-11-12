@@ -19,6 +19,10 @@ from ..configuration import LoRAConfig, ModelAdaptersConfig
 from .adapter_layer_base import AdapterLayerBase, ComposableAdapterLayerBase
 from .utils import dequantize_bnb_weight
 
+SEED = 42
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(SEED)
 
 try:
     from bitsandbytes.nn import Int8Params, Linear4bit, Linear8bitLt, Params4bit
@@ -52,32 +56,74 @@ class LoRA(nn.Module):
             self.lora_dropout = lambda x: x
 
         # Actual trainable parameters
-        self.lora_A = nn.Parameter(torch.zeros(lora_A_shape))
-        self.lora_B = nn.Parameter(torch.zeros(lora_B_shape))
+        self.lora_A = nn.Parameter(torch.zeros(lora_A_shape), requires_grad=False)
+        self.lora_B = nn.Parameter(torch.zeros(lora_B_shape), requires_grad=False)
+
+        # Scaling factor
         self.scaling = self.lora_alpha / self.r
 
-        # For compatibility with (IA)^3, allow all init_weights types here.
-        # Usually should be "lora".
-        if config.init_weights == "lora":
-            # initialize A the same way as the default for nn.Linear and B to zero
-            nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
-            nn.init.zeros_(self.lora_B)
-        elif config.init_weights == "bert":
-            nn.init.normal_(self.lora_A, std=0.02)
-            nn.init.normal_(self.lora_B, std=0.02)
-        elif config.init_weights == "ia3":
-            nn.init.ones_(self.lora_A)
-            nn.init.ones_(self.lora_B)
-        else:
-            raise ValueError("Unknown init_weights type: {}".format(config.init_weights))
+        # Initialize trainable `y` vector and lazy initialization for `A` matrix
+        self.y = nn.Parameter(torch.randn(400), requires_grad=True)
+        self.A = None  # Will be generated when needed
 
+        # Initialize gating layer if required
         if self.use_gating:
             self.gate = nn.Linear(lora_A_shape[-1], gating_heads)
             nn.init.normal_(self.gate.weight, std=0.02)
 
+        # For compatibility with (IA)^3, allow all init_weights types here.
+        # Usually should be "lora".
+        # if config.init_weights == "lora":
+        #     # initialize A the same way as the default for nn.Linear and B to zero
+        #     nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        #     nn.init.zeros_(self.lora_B)
+        # elif config.init_weights == "bert":
+        #     nn.init.normal_(self.lora_A, std=0.02)
+        #     nn.init.normal_(self.lora_B, std=0.02)
+        # elif config.init_weights == "ia3":
+        #     nn.init.ones_(self.lora_A)
+        #     nn.init.ones_(self.lora_B)
+        # else:
+        #     raise ValueError("Unknown init_weights type: {}".format(config.init_weights))
+
+        # if self.use_gating:
+        #     self.gate = nn.Linear(lora_A_shape[-1], gating_heads)
+        #     nn.init.normal_(self.gate.weight, std=0.02)
+
+    def _generate_measurement_matrix(self):
+        """Generates a fixed Gaussian measurement matrix `A`."""
+        torch.manual_seed(self.seed)
+        self.A = torch.randn(400, self.lora_A.numel())
+        return self.A
+
+    def recover_delta_w(self):
+        """Recover delta_w matrix using y and A with Iterative Hard Thresholding."""
+        if self.A is None:
+            self._generate_measurement_matrix()
+        
+        delta_w_flat = torch.zeros(self.lora_A.numel(), device=self.y.device)
+        
+        # Set parameters for Iterative Hard Thresholding
+        max_iterations = 10
+        threshold_rank = min(self.lora_A.shape)
+
+        for _ in range(max_iterations):
+            gradient = self.A.T @ (self.y - self.A @ delta_w_flat)
+            delta_w_flat += gradient  # Gradient ascent
+
+            # Retain only the top `threshold_rank` elements
+            _, indices = torch.topk(delta_w_flat.abs(), threshold_rank)
+            mask = torch.zeros_like(delta_w_flat)
+            mask[indices] = 1
+            delta_w_flat *= mask
+
+        delta_w = delta_w_flat.view(self.lora_B.shape[0], self.lora_A.shape[1])
+        return delta_w
+        
     @property
     def delta_w(self) -> torch.Tensor:
-        return self.lora_B @ self.lora_A
+        # return self.lora_B @ self.lora_A
+        return self.recover_delta_w()
 
     def com(self, weights: torch.Tensor, added: torch.Tensor, scaling=None) -> torch.Tensor:
         """Performs the composition operation between existing and injected weights."""
@@ -92,7 +138,12 @@ class LoRA(nn.Module):
     def forward(self, hidden_states: Optional[torch.Tensor], layer_input: torch.Tensor):
         if hidden_states is None:
             hidden_states = layer_input
-        hidden_states = self.lora_dropout(hidden_states) @ torch.t(self.lora_A) @ torch.t(self.lora_B)
+
+        # Apply delta_w to the input using LRMR-based recovery
+        delta_W = self.delta_w
+        hidden_states = F.linear(hidden_states, delta_W)
+        
+        # hidden_states = self.lora_dropout(hidden_states) @ torch.t(self.lora_A) @ torch.t(self.lora_B)
         if self.use_gating:
             gate = torch.sigmoid(self.gate(layer_input))
             gate = torch.mean(gate, dim=1).unsqueeze(-1)
@@ -101,7 +152,6 @@ class LoRA(nn.Module):
             gate = None
 
         return hidden_states, gate
-
 
 class IA3(nn.Module):
     def __init__(
