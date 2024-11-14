@@ -92,8 +92,9 @@ class LoRA(nn.Module):
 
     def _generate_measurement_matrix(self):
         """Generates a fixed Gaussian measurement matrix `A`."""
-        torch.manual_seed(self.seed)
-        self.A = torch.randn(400, self.lora_A.numel())
+        m, n = self.lora_B.shape[0], self.lora_A.shape[1]
+        p = self.y.shape[0] 
+        self.A = torch.randn(p, m*n)
         return self.A
 
     def recover_delta_w(self):
@@ -101,11 +102,12 @@ class LoRA(nn.Module):
         if self.A is None:
             self._generate_measurement_matrix()
         
-        delta_w_flat = torch.zeros(self.lora_A.numel(), device=self.y.device)
+        m, n = self.lora_B.shape[0], self.lora_A.shape[1]
+        delta_w_flat = torch.zeros(m * n, device=self.y.device)
         
         # Set parameters for Iterative Hard Thresholding
         max_iterations = 10
-        threshold_rank = min(self.lora_A.shape)
+        threshold_rank = 10
 
         for _ in range(max_iterations):
             gradient = self.A.T @ (self.y - self.A @ delta_w_flat)
@@ -117,7 +119,7 @@ class LoRA(nn.Module):
             mask[indices] = 1
             delta_w_flat *= mask
 
-        delta_w = delta_w_flat.view(self.lora_B.shape[0], self.lora_A.shape[1])
+        delta_w = delta_w_flat.view(m, n)  # Reshape to match `ΔW` dimensions
         self.delta_w = delta_w
         return delta_w
         
