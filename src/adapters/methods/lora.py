@@ -118,6 +118,7 @@ class LoRA(nn.Module):
             delta_w_flat *= mask
 
         delta_w = delta_w_flat.view(self.lora_B.shape[0], self.lora_A.shape[1])
+        self.delta_w = delta_w
         return delta_w
         
     @property
@@ -140,7 +141,10 @@ class LoRA(nn.Module):
             hidden_states = layer_input
 
         # Apply delta_w to the input using LRMR-based recovery
-        delta_W = self.self.recover_delta_w()
+        try:
+            delta_W = self.delta_w
+        except:
+            delta_W = self.recover_delta_w()
         hidden_states = F.linear(hidden_states, delta_W)
         
         # hidden_states = self.lora_dropout(hidden_states) @ torch.t(self.lora_A) @ torch.t(self.lora_B)
