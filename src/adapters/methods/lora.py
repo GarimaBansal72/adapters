@@ -94,7 +94,7 @@ class LoRA(nn.Module):
         """Generates a fixed Gaussian measurement matrix `A`."""
         m, n = self.lora_B.shape[0], self.lora_A.shape[1]
         p = self.y.shape[0] 
-        self.A = torch.randn(p, m*n)
+        self.A = torch.randn(p, m*n).to(self.y.device)
         return self.A
 
     def recover_delta_w(self):
