@@ -120,7 +120,7 @@ class LoRA(nn.Module):
             delta_w_flat *= mask
 
         delta_w = delta_w_flat.view(m, n)  # Reshape to match `ΔW` dimensions
-        self.delta_w = delta_w
+        # self.delta_w = delta_w
         return delta_w
         
     @property
