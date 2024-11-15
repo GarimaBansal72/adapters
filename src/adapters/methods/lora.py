@@ -111,10 +111,12 @@ class LoRA(nn.Module):
 
         for _ in range(max_iterations):
             gradient = self.A.T @ (self.y - self.A @ delta_w_flat)
+            print("gradient: ", gradient)
             delta_w_flat += gradient  # Gradient ascent
 
             # Retain only the top `threshold_rank` elements
             _, indices = torch.topk(delta_w_flat.abs(), threshold_rank)
+            print("indices: ", indices)
             mask = torch.zeros_like(delta_w_flat)
             mask[indices] = 1
             delta_w_flat *= mask
