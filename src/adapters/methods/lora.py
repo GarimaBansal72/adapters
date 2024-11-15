@@ -144,6 +144,7 @@ class LoRA(nn.Module):
 
         # Apply delta_w to the input using LRMR-based recovery
         delta_W = self.recover_delta_w()
+        print(delta_W)
         hidden_states = F.linear(hidden_states, delta_W)
         
         # hidden_states = self.lora_dropout(hidden_states) @ torch.t(self.lora_A) @ torch.t(self.lora_B)
