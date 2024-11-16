@@ -63,7 +63,7 @@ class LoRA(nn.Module):
         self.scaling = self.lora_alpha / self.r
 
         # Initialize trainable `y` vector and lazy initialization for `A` matrix
-        self.y = nn.Parameter(torch.randn(400), requires_grad=True)
+        self.y = nn.Parameter(torch.zeros(400), requires_grad=True)
         self.A = None  # Will be generated when needed
 
         # Initialize gating layer if required
@@ -95,6 +95,7 @@ class LoRA(nn.Module):
         m, n = self.lora_B.shape[0], self.lora_A.shape[1]
         p = self.y.shape[0] 
         self.A = torch.randn(p, m*n).to(self.y.device)
+        self.A = self.A / self.A.norm(dim=1, keepdim=True)  # Normalize rows of A
         return self.A
 
     def recover_delta_w(self):
@@ -112,7 +113,9 @@ class LoRA(nn.Module):
         for _ in range(max_iterations):
             gradient = self.A.T @ (self.y - self.A @ delta_w_flat)
             print("gradient: ", gradient)
+            gradient = torch.clamp(gradient, -1e3, 1e3)  # Clip gradient values
             delta_w_flat += gradient  # Gradient ascent
+            delta_w_flat = torch.clamp(delta_w_flat, -1e6, 1e6)  # Clip delta_w_flat values
 
             # Retain only the top `threshold_rank` elements
             _, indices = torch.topk(delta_w_flat.abs(), threshold_rank)
